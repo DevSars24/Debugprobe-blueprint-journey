@@ -225,7 +225,7 @@ The final rendered waterfall — ruler ticks scaled correctly to the 4076ms
 total duration, and the hover tooltip showing exact start offset, duration,
 and status for the `jsonplaceholder.typicode.com/posts` call:
 
-![Waterfall Phase 2 verification screenshot](./images/waterfall_phase2_verification.png)
+![Waterfall Phase 2 verification screenshot](./waterfall-screenshot.png)
 
 **Confirmed working:**
 - ✅ Time-axis ruler: `0 ms → 1019 ms → 2038 ms → 3057 ms → 4076 ms`
