@@ -62,13 +62,13 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    A[DebugEntry + DebugOutgoingRequest list] --> B[HarExporter.cs]
-    B --> C{Map to HAR schema}
-    C --> D[entries[].request]
-    C --> E[entries[].response]
-    C --> F[entries[].timings]
-    D & E & F --> G[.har JSON file]
-    G --> H[Download / Open in Chrome DevTools]
+    A["DebugEntry + DebugOutgoingRequest list"] --> B["HarExporter.cs"]
+    B --> C{"Map to HAR schema"}
+    C --> D["entry request"]
+    C --> E["entry response"]
+    C --> F["entry timings"]
+    D & E & F --> G[".har JSON file"]
+    G --> H["Download / Open in Chrome DevTools"]
 ```
 
 **How it works:** Pure data-mapping from objects already in memory. No new capture logic needed.
@@ -81,11 +81,11 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A[DebugEntry Saved] --> B{Matches Alert Rule?}
-    B -- status >= 500 --> C[Build Slack/Teams payload]
-    B -- duration > threshold --> C
-    B -- no match --> D[Do nothing]
-    C --> E[POST to configured Webhook URL]
+    A["DebugEntry Saved"] --> B{"Matches Alert Rule?"}
+    B -- "status is 500 or higher" --> C["Build Slack/Teams payload"]
+    B -- "duration over threshold" --> C
+    B -- "no match" --> D["Do nothing"]
+    C --> E["POST to configured Webhook URL"]
 ```
 
 **How it works:** One options class (`AlertRules`) + `HttpClient.PostAsync` on save. No new state to manage.
@@ -98,12 +98,12 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    A[Request to /debug/*] --> B{DebugProbeOptions.RequireAuth?}
-    B -- No --> F[Serve Dashboard]
-    B -- Yes --> C{Valid API Key / Basic Auth header?}
-    C -- Yes --> D{IP in Allowlist? optional}
+    A["Request to /debug/*"] --> B{"RequireAuth enabled?"}
+    B -- No --> F["Serve Dashboard"]
+    B -- Yes --> C{"Valid API Key or Basic Auth header?"}
+    C -- Yes --> D{"IP in Allowlist? (optional)"}
     D -- Yes --> F
-    C -- No --> E[401 Unauthorized]
+    C -- No --> E["401 Unauthorized"]
     D -- No --> E
 ```
 
@@ -117,11 +117,11 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[Unhandled Exception Caught in Middleware] --> B[Compute Fingerprint = hash of ExceptionType + Top 3 stack frames]
-    B --> C{Fingerprint seen before?}
-    C -- Yes --> D[Increment counter on existing group]
-    C -- No --> E[Create new ExceptionGroup entry]
-    D & E --> F[Dashboard shows grouped list: 'NullReferenceException in OrderService — ×47']
+    A["Unhandled Exception Caught in Middleware"] --> B["Compute Fingerprint: hash of ExceptionType + top 3 stack frames"]
+    B --> C{"Fingerprint seen before?"}
+    C -- Yes --> D["Increment counter on existing group"]
+    C -- No --> E["Create new ExceptionGroup entry"]
+    D & E --> F["Dashboard shows grouped list, e.g. NullReferenceException in OrderService x47"]
 ```
 
 **Gotcha:** Deciding how many stack frames to hash needs some trial-and-error — too many frames makes groups overly specific, too few merges unrelated errors together.
@@ -202,6 +202,3 @@ sequenceDiagram
 3. The captured SQL data then needs to be visually merged into the *existing* waterfall timeline alongside HTTP calls — so it's also an integration task on top of the waterfall, not just a standalone capture feature.
 
 ---
-
-
-> "Waterfall gave us visibility into *timing*. These features give us visibility into *depth* (SQL), *reach* (real-time + webhooks), *trust* (security), and *collaboration* (bookmarks/export) — without adding a single external dependency or database. Every feature reuses a pattern we've already proven works (interceptor → store → render)."
