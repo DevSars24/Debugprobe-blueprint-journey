@@ -1,4 +1,4 @@
-# DebugProbe.AspNetCore — 
+# DebugProbe.AspNetCore — Lightweight Feature Proposal
 
 This document proposes 7 lightweight features for `DebugProbe.AspNetCore`. Every feature reuses the existing architecture (`DebugEntryStore`, `HtmlRenderer`, `DebugEntry`, `DebugOutgoingRequest`) — **no new external dependencies, no database, no infra**. Advanced capabilities (dashboards, analytics, storage, management) remain out of scope for the package and are deferred to `DebugProbe.Server`.
 
@@ -199,27 +199,170 @@ flowchart LR
 
 ### UI/UX
 
-**8. Keyboard Shortcuts**
-`/` to focus search, `Esc` to close details view, `c` to copy cURL for the focused request. Pure JS `keydown` listeners on `debugprobe-ui.js`, no backend involvement.
+## 8. Keyboard Shortcuts
 
-**9. Pin / Favorite a Trace**
-Server-side boolean flag added to `DebugEntry` (in-memory only, resets with the queue). Pinned entries stay visible at the top of the index table regardless of the bounded queue eviction order.
+**Why it matters:** Developers debugging a production issue often bounce between search, a specific trace, and copying data out of it. Reaching for the mouse every time slows that loop down. A handful of keyboard shortcuts make the dashboard feel like a tool built for repeated, fast use rather than a one-off viewer.
 
-**10. Redaction Preview Toggle**
-A toggle on the details page that reveals the pre-redaction values for dev/local environments only — gated by `EnvironmentUtils`, no change to the redaction pipeline itself.
+**How it works:** A single global `keydown` listener in `debugprobe-ui.js` checks the pressed key and the currently focused/open element, then triggers the same functions already wired to their respective buttons (search focus, close details, copy cURL).
+
+```mermaid
+flowchart TD
+    A["User presses key"] --> B["Global keydown listener in debugprobe-ui.js"]
+    B --> C{"Which key?"}
+    C -->|"/"| D["Focus search input"]
+    C -->|"Esc"| E["Close details view / modal"]
+    C -->|"c"| F["Trigger copyAsCurl() on focused request"]
+```
+
+**Implementation notes:**
+- Skip shortcut handling when focus is inside a text input/textarea (except `Esc`), to avoid hijacking normal typing.
+- Reuses existing functions (`copyAsCurl`, search box focus, details view close) — no new logic, just new entry points into it.
+- No backend involvement.
+
+---
+
+## 9. Pin / Favorite a Trace
+
+**Why it matters:** `DebugEntryStore` is a bounded queue — older entries get evicted as new traffic comes in. During an active debugging session, the one trace a developer cares about can easily scroll out of view or get pushed out of the queue entirely. Pinning keeps an important trace visible and safe from casual loss.
+
+**How it works:** A boolean `IsPinned` flag is added to `DebugEntry`. The index page renders pinned entries in a separate "Pinned" section at the top, regardless of their position in the underlying queue. This stays in-memory only — no persistence beyond the process lifetime.
+
+```mermaid
+sequenceDiagram
+    actor Dev as Developer
+    participant UI as Index Page
+    participant API as /debug/pin/{id}
+    participant Store as DebugEntryStore
+
+    Dev->>UI: Click pin icon on a trace
+    UI->>API: POST /debug/pin/{id}
+    API->>Store: Set IsPinned = true on matching DebugEntry
+    Store-->>UI: Updated entry list
+    UI-->>Dev: Trace shown in "Pinned" section
+```
+
+**Implementation notes:**
+- Add `IsPinned` (bool) to `DebugEntry.cs`.
+- New minimal endpoint `/debug/pin/{id}` (toggle) registered alongside existing routes in `DebugProbeExtensions.cs`.
+- Eviction logic in `DebugEntryStore` should skip pinned entries when trimming to `MaxEntries`, or cap how many pinned entries are allowed to avoid unbounded memory growth.
+- No external storage — pin state disappears on app restart, consistent with the rest of the package's in-memory model.
+
+---
+
+## 10. Redaction Preview Toggle
+
+**Why it matters:** Redaction (`RedactionUtils`) hides sensitive header/query/JSON values by design — but during local development, a developer often needs to briefly confirm what the *real* value was (e.g. to check a token expired vs was malformed). Right now there's no safe way to peek without disabling redaction globally.
+
+**How it works:** A toggle on the details page temporarily reveals the original values, but only when the running environment is detected as local/development via the existing `EnvironmentUtils` check. The redaction pipeline itself is untouched — this only affects what's rendered in the UI, and only in safe environments.
+
+```mermaid
+flowchart LR
+    A["Developer clicks 'Show Redacted Values'"] --> B["EnvironmentUtils.IsDevelopment() check"]
+    B -->|"true"| C["Render original pre-redaction values"]
+    B -->|"false"| D["Toggle disabled / hidden entirely"]
+```
+
+**Implementation notes:**
+- Requires storing both the redacted *and* original values in memory for the toggle to work — a deliberate trade-off, so this should be opt-in via a config flag (e.g. `AllowRedactionPreview`) defaulting to `false`.
+- Toggle button is hidden entirely outside of development environments — not just disabled, to avoid signaling its existence in production.
+- No change to `RedactionUtils` itself; this is purely an additional rendering path in `HtmlRenderer`.
+
+---
 
 ### Meta / Telemetry
 
-**11. Request Rate Sparkline**
-Small inline SVG/canvas chart on the index page showing request count per minute over the last N minutes. Computed by aggregating timestamps already present in `DebugEntryStore` — no new capture logic.
+## 11. Request Rate Sparkline
 
-**12. Environment Diff Badge**
-When the same endpoint returns a different response across environments, a small badge surfaces the mismatch. Reuses the existing `DebugEntryComparer` logic already built for the compare feature.
+**Why it matters:** The index page currently shows totals (total requests, error rate) but no sense of *shape* — was there a traffic spike five minutes ago? A tiny inline chart gives an at-a-glance read on recent traffic patterns without needing a full analytics dashboard (which belongs in `DebugProbe.Server`).
 
-**13. Error Rate Trend Indicator**
-A simple ↑ / ↓ arrow next to the existing error rate metric on the index page, comparing the current window to the previous one. Pure aggregation over already-stored entries.
+**How it works:** Timestamps are already stored on every `DebugEntry`. A lightweight aggregation buckets entries into per-minute counts over the last N minutes, and a small inline SVG polyline renders the trend — no charting library required.
+
+```mermaid
+flowchart LR
+    A["DebugEntryStore: all entries with timestamps"] --> B["Bucket into 1-minute windows (last N minutes)"]
+    B --> C["Compute counts per bucket"]
+    C --> D["Render as inline SVG polyline"]
+    D --> E["Sparkline shown on Index page header"]
+```
+
+**Implementation notes:**
+- Aggregation happens on-demand when the index page renders — no background job, no additional storage.
+- Hand-rolled SVG `<polyline>` keeps this dependency-free (no charting library needed for something this small).
+- `N` (lookback window) can be a fixed constant or a small config option.
+
+---
+
+## 12. Environment Diff Badge
+
+**Why it matters:** A common class of bug is "works in staging, breaks in production" (or vice versa) for the exact same endpoint. Surfacing that mismatch automatically — instead of requiring a developer to manually trigger a compare — turns a reactive tool into a proactive one.
+
+**How it works:** This reuses the existing compare engine (`DebugEntryComparer`) that already powers the manual compare feature. When two entries share the same route across different environments, the same diffing logic runs automatically and a badge appears if differences are found.
+
+```mermaid
+flowchart TD
+    A["New DebugEntry captured"] --> B{"Matching route exists from another environment?"}
+    B -->|No| C["No badge"]
+    B -->|Yes| D["Run DebugEntryComparer on both entries"]
+    D --> E{"Differences found?"}
+    E -->|Yes| F["Show 'Env Diff' badge on Index row"]
+    E -->|No| C
+```
+
+**Implementation notes:**
+- Requires a way to identify "the same route" across environments — likely matching on normalized path + method, tagged with the environment name already available via `DebugEnvironment`.
+- Runs the existing `DebugEntryComparer` rather than introducing new diffing logic.
+- Should be opt-in (config flag) since automatic cross-entry comparison adds a small amount of CPU work per request; can be skipped in high-throughput scenarios.
+
+---
+
+## 13. Error Rate Trend Indicator
+
+**Why it matters:** Knowing the current error rate is useful; knowing whether it's *getting worse* is more useful. A small trend arrow next to the existing error rate metric gives an instant read on direction without needing a chart or a trip to `DebugProbe.Server`'s analytics.
+
+**How it works:** `HtmlRenderer.RenderIndexPage` already computes the current error rate. This adds a second computation over the *previous* comparable time window and renders a simple ↑ (worse) or ↓ (better) arrow next to the existing metric.
+
+```mermaid
+flowchart LR
+    A["Current window: error rate"] --> C["Compare"]
+    B["Previous window: error rate"] --> C
+    C -->|"current > previous"| D["Show ↑ (worsening)"]
+    C -->|"current < previous"| E["Show ↓ (improving)"]
+    C -->|"equal"| F["Show → (stable)"]
+```
+
+**Implementation notes:**
+- Both windows are computed from data already in `DebugEntryStore` — no new capture or storage.
+- Window size (e.g. "last 10 minutes vs the 10 minutes before that") can reuse whatever lookback constant is chosen for the Request Rate Sparkline, keeping the two features consistent.
+- Purely additive to the existing metrics row in `HtmlRenderer.RenderIndexPage`.
+
+---
 
 ### Safety Nets
 
-**14. Replay Warning for Non-GET**
-Before firing a replay on a POST/PUT/DELETE request, show a confirmation modal: "⚠️ This may re-trigger a real action." Applies only if a replay feature is implemented later; otherwise this is a placeholder guard for that future capability.
+## 14. Replay Warning for Non-GET
+
+**Why it matters:** If a future "replay this request" capability is added to the package, blindly re-firing a POST/PUT/DELETE could re-trigger a real side effect — creating a duplicate order, re-sending a payment, deleting a resource again. A confirmation step is a small guard that prevents an accidental click from causing real damage.
+
+**How it works:** Before any replay action executes, the UI checks the HTTP method of the original request. GET (and other safe/idempotent methods) proceed immediately; anything else shows a confirmation modal first.
+
+```mermaid
+sequenceDiagram
+    actor Dev as Developer
+    participant UI as Dashboard
+    participant Modal as Confirmation Modal
+
+    Dev->>UI: Click "Replay"
+    UI->>UI: Check original request method
+    alt Method is GET/HEAD
+        UI->>UI: Replay immediately
+    else Method is POST/PUT/DELETE/PATCH
+        UI->>Modal: Show "⚠️ This may re-trigger a real action"
+        Dev->>Modal: Confirm
+        Modal->>UI: Proceed with replay
+    end
+```
+
+**Implementation notes:**
+- This feature is a **guard**, not a standalone capability — it only becomes relevant once a replay/resend feature exists in the package.
+- Implemented as a simple client-side method check plus a confirmation modal; no backend logic required beyond whatever the (future) replay endpoint itself needs.
+- Worth building at the same time as any replay feature, rather than bolted on afterward, so the warning can't accidentally be skipped.
